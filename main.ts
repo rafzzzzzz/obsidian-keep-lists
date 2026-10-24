@@ -7,6 +7,8 @@ import {
 	MarkdownRenderChild,
 	MarkdownRenderer,
 	MarkdownView,
+	Menu,
+	MenuItem,
 	Notice,
 	Plugin,
 	Scope,
@@ -25,7 +27,8 @@ const NEST_THRESHOLD = 20;
 const LINE_RE = /^(\s*)[-*+]\s+\[([ xX])\]\s?(.*)$/;
 
 // Where to put the caret after our own write re-renders the block.
-let pendingFocus: { path: string; lineStart: number; idx: number; caret: number; at: number } | null = null;
+let pendingFocus: { path: string; lineStart: number; idx: number; caret: number; end?: number; at: number } | null =
+	null;
 // Completed-section collapse state, per block.
 const collapsed = new Map<string, boolean>();
 
@@ -151,6 +154,40 @@ const WRAPS: Record<string, string> = {
 	"editor:toggle-comments": "%%",
 };
 
+// Right-click menu for an item, laid out like Obsidian's editor menu.
+const MENU: { title: string; icon: string; items: [id: string, title: string, icon: string][] }[] = [
+	{
+		title: "Format",
+		icon: "type",
+		items: [
+			["editor:toggle-bold", "Bold", "bold"],
+			["editor:toggle-italics", "Italic", "italic"],
+			["editor:toggle-strikethrough", "Strikethrough", "strikethrough"],
+			["editor:toggle-highlight", "Highlight", "highlighter"],
+			["editor:toggle-code", "Code", "code"],
+			["editor:toggle-inline-math", "Math", "sigma"],
+			["editor:toggle-comments", "Comment", "percent"],
+			["editor:clear-formatting", "Clear formatting", "eraser"],
+		],
+	},
+	{
+		title: "Paragraph",
+		icon: "pilcrow",
+		items: [
+			...[1, 2, 3, 4, 5, 6].map((n): [string, string, string] => [`editor:set-heading-${n}`, `Heading ${n}`, `heading-${n}`]),
+			["editor:set-heading-0", "Body", "pilcrow"],
+		],
+	},
+	{
+		title: "Insert",
+		icon: "plus",
+		items: [
+			["editor:insert-link", "Markdown link", "link"],
+			["editor:insert-wikilink", "Wikilink", "link-2"],
+		],
+	},
+];
+
 // Editor commands the text field already handles natively.
 const NATIVE = new Set(["editor:undo", "editor:redo", "editor:copy", "editor:cut", "editor:paste"]);
 
@@ -188,6 +225,7 @@ class KeepList {
 	private items: Item[];
 	private activeEl!: HTMLElement;
 	private dirty = false;
+	private menuOpen = false;
 	private component: MarkdownRenderChild;
 
 	constructor(
@@ -206,6 +244,15 @@ class KeepList {
 		this.root.addEventListener("mousedown", (e) => {
 			e.stopPropagation();
 			if (!(e.target as HTMLElement).closest(".keep-text")) e.preventDefault();
+		});
+		// Our own menu instead of the note editor's, whose actions would
+		// land in the note rather than in the item.
+		this.root.addEventListener("contextmenu", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const row = (e.target as HTMLElement).closest<HTMLElement>(".keep-row");
+			const text = row?.querySelector<HTMLElement>(".keep-text");
+			if (row && text) this.showMenu(e, row, text);
 		});
 		this.render();
 		this.restoreFocus();
@@ -301,7 +348,7 @@ class KeepList {
 			row.toggleClass("keep-heading-row", HEADING_RE.test(item.text));
 			this.renderMarkdown(shown, item.text);
 			const next = e.relatedTarget as Node | null;
-			if (this.dirty && !(next && this.root.contains(next))) this.save();
+			if (this.dirty && !this.menuOpen && !(next && this.root.contains(next))) this.save();
 		});
 
 		const del = row.createDiv({ cls: "keep-delete", attr: { "aria-label": "Delete item" } });
@@ -333,6 +380,64 @@ class KeepList {
 		// Any other command that acts on an editor would hit the note behind
 		// the list, so swallow it.
 		if (cmd && (cmd.editorCallback || cmd.editorCheckCallback)) return false;
+	}
+
+	private showMenu(e: MouseEvent, row: HTMLElement, el: HTMLElement) {
+		const idx = Number(row.dataset.idx);
+		const item = this.items[idx];
+		if (!row.hasClass("keep-editing")) setCaret(el, item.text.length);
+		const [start, end] = getSelectionRange(el);
+		const selected = item.text.slice(start, end);
+		const replaceSelection = (insert: string) => {
+			const caret = start + insert.length;
+			this.applyEdit(idx, { text: item.text.slice(0, start) + insert + item.text.slice(end), start: caret, end: caret });
+		};
+
+		const menu = new Menu();
+		if (selected) {
+			menu.addItem((i) =>
+				i.setTitle("Cut").setIcon("scissors").onClick(() => {
+					navigator.clipboard.writeText(selected);
+					replaceSelection("");
+				}),
+			);
+			menu.addItem((i) => i.setTitle("Copy").setIcon("copy").onClick(() => navigator.clipboard.writeText(selected)));
+		}
+		menu.addItem((i) =>
+			i.setTitle("Paste").setIcon("clipboard-paste").onClick(async () => {
+				replaceSelection((await navigator.clipboard.readText()).replace(/\r?\n/g, " "));
+			}),
+		);
+		menu.addSeparator();
+		for (const group of MENU) {
+			menu.addItem((parent) => {
+				parent.setTitle(group.title).setIcon(group.icon);
+				// setSubmenu is internal; fall back to a flat menu without it.
+				const sub = (parent as MenuItem & { setSubmenu?: () => Menu }).setSubmenu?.() ?? menu;
+				for (const [id, title, icon] of group.items) {
+					sub.addItem((i) =>
+						i.setTitle(title).setIcon(icon).onClick(() => {
+							const edit = applyCommand(id, item.text, start, end);
+							if (edit) this.applyEdit(idx, edit);
+						}),
+					);
+				}
+			});
+		}
+
+		// Don't save (and re-render) on blur while the menu is open, or the
+		// chosen action would land on a list that no longer exists.
+		this.menuOpen = true;
+		menu.onHide(() => {
+			this.menuOpen = false;
+			if (this.dirty && !this.root.contains(document.activeElement)) this.save();
+		});
+		menu.showAtMouseEvent(e);
+	}
+
+	private applyEdit(idx: number, edit: Edit) {
+		this.items[idx].text = edit.text;
+		this.save({ idx, caret: edit.start, end: edit.end });
 	}
 
 	private visibleRows(): HTMLElement[] {
@@ -531,11 +636,11 @@ class KeepList {
 			const info = this.ctx.getSectionInfo(this.root);
 			if (info && info.lineStart !== p.lineStart) return;
 			const el = this.root.querySelector<HTMLElement>(`.keep-row[data-idx="${p.idx}"] .keep-text`);
-			if (el) setCaret(el, p.caret);
+			if (el) setSelection(el, p.caret, p.end ?? p.caret);
 		});
 	}
 
-	private async save(focus?: { idx: number; caret: number }) {
+	private async save(focus?: { idx: number; caret: number; end?: number }) {
 		this.dirty = false;
 		const info = this.ctx.getSectionInfo(this.root);
 		if (!info) {

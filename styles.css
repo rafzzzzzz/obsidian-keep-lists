@@ -75,12 +75,13 @@
 	cursor: text;
 }
 
-.keep-rendered > * {
-	margin: 0;
+/* Obsidian's own paragraph/heading margins are more specific than ours. */
+.keep-list .keep-rendered > *,
+.keep-list .keep-rendered :is(p, h1, h2, h3, h4, h5, h6) {
+	margin: 0 !important;
 }
 
-.keep-rendered :is(h1, h2, h3, h4, h5, h6) {
-	margin: 0;
+.keep-list .keep-rendered :is(h1, h2, h3, h4, h5, h6) {
 	line-height: 1.3;
 }
 
