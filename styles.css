@@ -1,0 +1,167 @@
+.keep-list {
+	padding: 4px 0;
+	user-select: none;
+}
+
+.keep-active {
+	position: relative;
+}
+
+.keep-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	padding: 5px 8px 5px 0;
+	border-top: 1px solid transparent;
+	border-bottom: 1px solid transparent;
+	background: var(--background-primary);
+}
+
+.keep-row:focus-within {
+	border-color: var(--background-modifier-border);
+}
+
+.keep-row.keep-nested {
+	padding-left: 28px;
+}
+
+.keep-handle {
+	flex: none;
+	width: 18px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-faint);
+	cursor: grab;
+	opacity: 0;
+	touch-action: none;
+}
+
+.keep-row:hover .keep-handle,
+.keep-row:focus-within .keep-handle,
+.keep-dragging .keep-handle {
+	opacity: 1;
+}
+
+.keep-handle svg {
+	width: 16px;
+	height: 16px;
+}
+
+.keep-list input.keep-checkbox {
+	flex: none;
+	margin: 4px 4px 0 0;
+}
+
+.keep-text {
+	flex: 1;
+	min-width: 0;
+	min-height: 22px;
+	line-height: 22px;
+	outline: none;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	user-select: text;
+	cursor: text;
+}
+
+.keep-checked .keep-text {
+	text-decoration: line-through;
+	color: var(--text-muted);
+}
+
+.keep-delete {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	color: var(--text-muted);
+	cursor: pointer;
+	opacity: 0;
+}
+
+.keep-delete:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.keep-row:hover .keep-delete,
+.keep-row:focus-within .keep-delete {
+	opacity: 1;
+}
+
+.keep-delete svg {
+	width: 16px;
+	height: 16px;
+}
+
+.keep-add {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 8px 6px 24px;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.keep-add:hover {
+	color: var(--text-normal);
+}
+
+.keep-add-icon {
+	display: flex;
+}
+
+.keep-add-icon svg {
+	width: 16px;
+	height: 16px;
+}
+
+.keep-completed {
+	margin-top: 4px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.keep-completed-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 8px 4px 22px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	cursor: pointer;
+}
+
+.keep-chevron {
+	display: flex;
+}
+
+.keep-chevron svg {
+	width: 16px;
+	height: 16px;
+}
+
+.keep-is-dragging,
+.keep-is-dragging * {
+	cursor: grabbing !important;
+}
+
+.keep-dragging {
+	position: relative;
+	z-index: 2;
+	box-shadow: var(--shadow-s);
+	border-radius: 4px;
+}
+
+.keep-drop-indicator {
+	position: absolute;
+	right: 8px;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--interactive-accent);
+	pointer-events: none;
+}
