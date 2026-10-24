@@ -20,5 +20,8 @@ The block stores plain markdown checkboxes, so the note stays readable without t
 - **Tab / Shift+Tab** nest / un-nest; ↑/↓ move between items
 - Checked items move to the collapsible **completed** section; unchecking returns them to their old spot
 - Checking a parent checks its nested items; pasting several lines creates several items
+- Item text is markdown: it shows formatted (bold, headings, links…) and switches to raw markdown while you edit it.
+  Your Obsidian hotkeys for Bold, Italic, Strikethrough, Highlight, Code, Math, Comment, Insert link,
+  Insert wikilink, Set heading 1–6 / Remove heading and Clear formatting apply to the item being edited
 
 Build & install into the vault: `npm install && npm run install-vault`

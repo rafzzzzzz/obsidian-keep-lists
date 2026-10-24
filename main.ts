@@ -1,9 +1,15 @@
 import {
+	Command,
 	Editor,
+	Keymap,
+	KeymapContext,
 	MarkdownPostProcessorContext,
+	MarkdownRenderChild,
+	MarkdownRenderer,
 	MarkdownView,
 	Notice,
 	Plugin,
+	Scope,
 	TFile,
 	setIcon,
 } from "obsidian";
@@ -54,31 +60,124 @@ function groupLength(items: Item[], idx: number): number {
 	return n;
 }
 
-function getCaret(el: HTMLElement): number {
+function getSelectionRange(el: HTMLElement): [number, number] {
 	const sel = window.getSelection();
-	if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return el.textContent?.length ?? 0;
+	const len = el.textContent?.length ?? 0;
+	if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return [len, len];
 	const range = sel.getRangeAt(0);
-	const pre = document.createRange();
-	pre.selectNodeContents(el);
-	pre.setEnd(range.startContainer, range.startOffset);
-	return pre.toString().length;
+	const offset = (node: Node, off: number) => {
+		const pre = document.createRange();
+		pre.selectNodeContents(el);
+		pre.setEnd(node, off);
+		return pre.toString().length;
+	};
+	return [offset(range.startContainer, range.startOffset), offset(range.endContainer, range.endOffset)];
 }
 
-function setCaret(el: HTMLElement, caret: number) {
+function getCaret(el: HTMLElement): number {
+	return getSelectionRange(el)[0];
+}
+
+// Switches the row to its raw-markdown editing view and selects start..end.
+function setSelection(el: HTMLElement, start: number, end: number) {
+	el.closest(".keep-row")?.addClass("keep-editing");
+	el.normalize();
 	el.focus();
 	const sel = window.getSelection();
 	if (!sel) return;
 	const range = document.createRange();
 	const node = el.firstChild;
 	if (node && node.nodeType === Node.TEXT_NODE) {
-		range.setStart(node, Math.min(caret, node.textContent?.length ?? 0));
-		range.collapse(true);
+		const len = node.textContent?.length ?? 0;
+		range.setStart(node, Math.min(start, len));
+		range.setEnd(node, Math.min(end, len));
 	} else {
 		range.selectNodeContents(el);
 		range.collapse(false);
 	}
 	sel.removeAllRanges();
 	sel.addRange(range);
+}
+
+function setCaret(el: HTMLElement, caret: number) {
+	setSelection(el, caret, caret);
+}
+
+interface Edit {
+	text: string;
+	start: number;
+	end: number;
+}
+
+// Wraps the selection in a marker like **, or removes it if already wrapped.
+function toggleWrap(text: string, start: number, end: number, mark: string): Edit {
+	const before = text.slice(0, start);
+	const sel = text.slice(start, end);
+	const after = text.slice(end);
+	const n = mark.length;
+	// "*" next to "**" is bold, not italics.
+	const isBoldEdge = mark === "*" && before.endsWith("**") && !before.endsWith("***");
+	if (before.endsWith(mark) && after.startsWith(mark) && !isBoldEdge) {
+		return { text: before.slice(0, -n) + sel + after.slice(n), start: start - n, end: end - n };
+	}
+	if (sel.length >= 2 * n && sel.startsWith(mark) && sel.endsWith(mark)) {
+		return { text: before + sel.slice(n, -n) + after, start, end: end - 2 * n };
+	}
+	return { text: before + mark + sel + mark + after, start: start + n, end: end + n };
+}
+
+const HEADING_RE = /^#{1,6}\s+/;
+
+// Sets the heading level (0 removes it); setting the current level toggles it off.
+function setHeading(text: string, start: number, end: number, level: number): Edit {
+	const old = HEADING_RE.exec(text)?.[0] ?? "";
+	const same = old.trim().length === level;
+	const prefix = level > 0 && !same ? "#".repeat(level) + " " : "";
+	const delta = prefix.length - old.length;
+	return {
+		text: prefix + text.slice(old.length),
+		start: Math.max(prefix.length, start + delta),
+		end: Math.max(prefix.length, end + delta),
+	};
+}
+
+const WRAPS: Record<string, string> = {
+	"editor:toggle-bold": "**",
+	"editor:toggle-italics": "*",
+	"editor:toggle-strikethrough": "~~",
+	"editor:toggle-highlight": "==",
+	"editor:toggle-code": "`",
+	"editor:toggle-inline-math": "$",
+	"editor:toggle-comments": "%%",
+};
+
+// Editor commands the text field already handles natively.
+const NATIVE = new Set(["editor:undo", "editor:redo", "editor:copy", "editor:cut", "editor:paste"]);
+
+function applyCommand(id: string, text: string, start: number, end: number): Edit | null {
+	if (id in WRAPS) return toggleWrap(text, start, end, WRAPS[id]);
+	const heading = /^editor:set-heading-(\d)$/.exec(id);
+	if (heading) return setHeading(text, start, end, Number(heading[1]));
+	const before = text.slice(0, start);
+	const sel = text.slice(start, end);
+	const after = text.slice(end);
+	if (id === "editor:insert-link") {
+		const caret = sel ? start + sel.length + 3 : start + 1;
+		return { text: `${before}[${sel}]()${after}`, start: caret, end: caret };
+	}
+	if (id === "editor:insert-wikilink") {
+		return { text: `${before}[[${sel}]]${after}`, start: start + 2, end: end + 2 };
+	}
+	if (id === "editor:clear-formatting") {
+		const strip = (s: string) => s.replace(/\*\*|__|~~|==|%%|[*_`$]/g, "");
+		if (sel) {
+			const cleared = strip(sel);
+			return { text: before + cleared + after, start, end: start + cleared.length };
+		}
+		const cleared = strip(text.replace(HEADING_RE, ""));
+		return { text: cleared, start: cleared.length, end: cleared.length };
+	}
+	return null;
 }
 
 function isFence(line: string) {
@@ -89,6 +188,7 @@ class KeepList {
 	private items: Item[];
 	private activeEl!: HTMLElement;
 	private dirty = false;
+	private component: MarkdownRenderChild;
 
 	constructor(
 		private plugin: KeepListsPlugin,
@@ -97,6 +197,9 @@ class KeepList {
 		private ctx: MarkdownPostProcessorContext,
 	) {
 		this.items = parse(source);
+		this.component = new MarkdownRenderChild(root);
+		ctx.addChild(this.component);
+		plugin.lists.set(root, this);
 		this.root.addClass("keep-list");
 		// Keep focus in the text field when clicking controls, so a blur
 		// doesn't write (and re-render) before the click lands.
@@ -162,6 +265,24 @@ class KeepList {
 		cb.checked = item.checked;
 		cb.addEventListener("change", () => this.toggle(idx, cb.checked));
 
+		if (HEADING_RE.test(item.text)) row.addClass("keep-heading-row");
+
+		// Formatted view, swapped for the raw markdown while editing.
+		const shown = row.createDiv("keep-rendered");
+		this.renderMarkdown(shown, item.text);
+		shown.addEventListener("click", (e) => {
+			const link = (e.target as HTMLElement).closest("a");
+			if (link) {
+				if (link.hasClass("internal-link")) {
+					e.preventDefault();
+					const href = link.dataset.href ?? link.getAttr("href") ?? "";
+					this.plugin.app.workspace.openLinkText(href, this.ctx.sourcePath, Keymap.isModEvent(e));
+				}
+				return;
+			}
+			setCaret(text, item.text.length);
+		});
+
 		const text = row.createDiv("keep-text");
 		text.contentEditable = "plaintext-only";
 		text.textContent = item.text;
@@ -176,6 +297,9 @@ class KeepList {
 		text.addEventListener("keydown", (e) => this.onKey(e, idx, text, completed));
 		text.addEventListener("paste", (e) => this.onPaste(e, idx, text));
 		text.addEventListener("blur", (e) => {
+			row.removeClass("keep-editing");
+			row.toggleClass("keep-heading-row", HEADING_RE.test(item.text));
+			this.renderMarkdown(shown, item.text);
 			const next = e.relatedTarget as Node | null;
 			if (this.dirty && !(next && this.root.contains(next))) this.save();
 		});
@@ -183,6 +307,32 @@ class KeepList {
 		const del = row.createDiv({ cls: "keep-delete", attr: { "aria-label": "Delete item" } });
 		setIcon(del, "x");
 		del.addEventListener("click", () => this.remove(idx));
+	}
+
+	private renderMarkdown(el: HTMLElement, markdown: string) {
+		el.empty();
+		MarkdownRenderer.render(this.plugin.app, markdown, el, this.ctx.sourcePath, this.component);
+	}
+
+	// Runs an editor command (bold, heading, ...) against the item being edited.
+	// Returns false to stop Obsidian from running it on the note's editor.
+	onCommand(id: string, cmd: Command | null, el: HTMLElement): boolean | undefined {
+		if (NATIVE.has(id)) return true;
+		const idx = Number(el.closest<HTMLElement>(".keep-row")?.dataset.idx);
+		const item = this.items[idx];
+		if (!item) return;
+		const [start, end] = getSelectionRange(el);
+		const edit = applyCommand(id, item.text, start, end);
+		if (edit) {
+			item.text = edit.text;
+			el.textContent = edit.text;
+			setSelection(el, edit.start, edit.end);
+			this.dirty = true;
+			return false;
+		}
+		// Any other command that acts on an editor would hit the note behind
+		// the list, so swallow it.
+		if (cmd && (cmd.editorCallback || cmd.editorCheckCallback)) return false;
 	}
 
 	private visibleRows(): HTMLElement[] {
@@ -438,8 +588,32 @@ class KeepList {
 	}
 }
 
+// Internal API: the baked list of every command hotkey (custom + default).
+interface HotkeyManager {
+	bake(): void;
+	bakedHotkeys: { modifiers: string | null; key: string | null }[];
+	bakedIds: string[];
+}
+
 export default class KeepListsPlugin extends Plugin {
+	lists = new WeakMap<HTMLElement, KeepList>();
+	private scope!: Scope;
+	private scopePushed = false;
+
 	async onload() {
+		// While an item is being edited, route the user's formatting hotkeys to it.
+		this.scope = new Scope(this.app.scope);
+		this.scope.register(null, null, (evt, ctx) => this.onKey(ctx));
+		this.registerDomEvent(document, "focusin", (e) => {
+			if (isItemText(e.target) && !this.scopePushed) {
+				this.app.keymap.pushScope(this.scope);
+				this.scopePushed = true;
+			}
+		});
+		this.registerDomEvent(document, "focusout", (e) => {
+			if (!isItemText(e.relatedTarget)) this.popScope();
+		});
+
 		this.registerMarkdownCodeBlockProcessor("keep", (source, el, ctx) => {
 			new KeepList(this, el, source, ctx);
 		});
@@ -455,4 +629,36 @@ export default class KeepListsPlugin extends Plugin {
 			},
 		});
 	}
+
+	onunload() {
+		this.popScope();
+	}
+
+	private popScope() {
+		if (!this.scopePushed) return;
+		this.app.keymap.popScope(this.scope);
+		this.scopePushed = false;
+	}
+
+	private onKey(ctx: KeymapContext): boolean | undefined {
+		const el = activeDocument.activeElement;
+		if (!isItemText(el)) return;
+		const list = this.lists.get(el.closest<HTMLElement>(".keep-list")!);
+		const hm = (this.app as unknown as { hotkeyManager?: HotkeyManager }).hotkeyManager;
+		if (!list || !hm) return;
+		hm.bake();
+		const i = hm.bakedHotkeys.findIndex(
+			(h) =>
+				(h.modifiers === null || h.modifiers === ctx.modifiers) &&
+				(!h.key || h.key === ctx.vkey || h.key.toLowerCase() === ctx.key?.toLowerCase()),
+		);
+		if (i < 0) return;
+		const id = hm.bakedIds[i];
+		const commands = (this.app as unknown as { commands: { findCommand(id: string): Command | undefined } }).commands;
+		return list.onCommand(id, commands.findCommand(id) ?? null, el);
+	}
+}
+
+function isItemText(el: EventTarget | null): el is HTMLElement {
+	return el instanceof HTMLElement && el.hasClass("keep-text");
 }
