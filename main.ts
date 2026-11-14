@@ -13,8 +13,11 @@ import {
 	Plugin,
 	Scope,
 	TFile,
+	editorLivePreviewField,
 	setIcon,
 } from "obsidian";
+import { Text } from "@codemirror/state";
+import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 
 interface Item {
 	text: string;
@@ -220,6 +223,56 @@ function applyCommand(id: string, text: string, start: number, end: number): Edi
 function isFence(line: string) {
 	return /^\s*(```|~~~)/.test(line);
 }
+
+// The keep block containing `pos`, from the start of its opening fence to the end of its closing fence.
+function keepBlockAt(doc: Text, pos: number): { from: number; to: number } | null {
+	let open: { from: number; fence: string; keep: boolean } | null = null;
+	for (let n = 1; n <= doc.lines; n++) {
+		const line = doc.line(n);
+		if (!open && line.from > pos) return null;
+		const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line.text);
+		if (!m) continue;
+		if (!open) {
+			open = { from: line.from, fence: m[1], keep: /^\s*keep(\s|$)/.test(m[2]) };
+		} else if (m[1][0] === open.fence[0] && m[1].length >= open.fence.length && !m[2].trim()) {
+			if (open.from <= pos && pos < line.to) return open.keep ? { from: open.from, to: line.to } : null;
+			open = null;
+		}
+	}
+	return null;
+}
+
+// Live Preview shows a code block's raw source while the focused editor's cursor is inside it.
+// A note that starts with a keep list opens with the cursor on its first line, so whenever the
+// editor gets a new document or gains focus with the cursor in a keep block, park the cursor just
+// past the block. Moving into the block with the arrow keys still reveals the source.
+const parkCursorOutsideLists = ViewPlugin.fromClass(
+	class {
+		constructor(view: EditorView) {
+			this.check(view);
+		}
+		update(u: ViewUpdate) {
+			if (u.focusChanged) this.check(u.view);
+		}
+		check(view: EditorView) {
+			queueMicrotask(() => {
+				if (!view.hasFocus || !view.state.field(editorLivePreviewField, false)) return;
+				const { doc, selection } = view.state;
+				const head = selection.main.head;
+				const block = keepBlockAt(doc, head);
+				if (!block) return;
+				// Obsidian opens a note by scrolling to the cursor at the very start, but once the list
+				// renders that position is the whole list widget, and the editor scrolls to its bottom.
+				// Undo that and pin the scroll position; otherwise just keep where the user is.
+				if (head === 0) view.scrollDOM.scrollTop = 0;
+				view.dispatch({
+					selection: { anchor: block.to < doc.length ? block.to + 1 : block.to },
+					effects: view.scrollSnapshot(),
+				});
+			});
+		}
+	},
+);
 
 class KeepList {
 	private items: Item[];
@@ -722,6 +775,7 @@ export default class KeepListsPlugin extends Plugin {
 		this.registerMarkdownCodeBlockProcessor("keep", (source, el, ctx) => {
 			new KeepList(this, el, source, ctx);
 		});
+		this.registerEditorExtension(parkCursorOutsideLists);
 
 		this.addCommand({
 			id: "insert-keep-list",
