@@ -75,10 +75,15 @@
 	cursor: text;
 }
 
-/* Obsidian's own paragraph/heading margins are more specific than ours. */
-.keep-list .keep-rendered > *,
-.keep-list .keep-rendered :is(p, h1, h2, h3, h4, h5, h6) {
-	margin: 0 !important;
+/* Items are one line each: drop Obsidian's paragraph and heading spacing. */
+.keep-rendered {
+	--p-spacing: 0px;
+	--heading-spacing: 0px;
+}
+
+.keep-list .keep-row .keep-rendered > *,
+.keep-list .keep-row .keep-rendered :is(p, h1, h2, h3, h4, h5, h6) {
+	margin: 0;
 }
 
 .keep-list .keep-rendered :is(h1, h2, h3, h4, h5, h6) {
@@ -178,9 +183,9 @@
 	height: 16px;
 }
 
-.keep-is-dragging,
-.keep-is-dragging * {
-	cursor: grabbing !important;
+.keep-list.keep-is-dragging,
+.keep-list.keep-is-dragging * {
+	cursor: grabbing;
 }
 
 .keep-dragging {

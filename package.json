@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-keep-lists",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Google Keep-style checklists: drag to reorder, drag right to nest, checked items move to a completed section.",
 	"license": "MIT",
 	"private": true,

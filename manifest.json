@@ -1,7 +1,7 @@
 {
   "id": "keep-lists",
   "name": "Keep Lists",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.6.0",
   "description": "Google Keep-style checklists: drag to reorder, drag right to nest, checked items move to a completed section.",
   "author": "Rafael Marques",
