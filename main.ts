@@ -67,12 +67,12 @@ function groupLength(items: Item[], idx: number): number {
 }
 
 function getSelectionRange(el: HTMLElement): [number, number] {
-	const sel = window.getSelection();
+	const sel = el.win.getSelection();
 	const len = el.textContent?.length ?? 0;
 	if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return [len, len];
 	const range = sel.getRangeAt(0);
 	const offset = (node: Node, off: number) => {
-		const pre = document.createRange();
+		const pre = el.doc.createRange();
 		pre.selectNodeContents(el);
 		pre.setEnd(node, off);
 		return pre.toString().length;
@@ -89,9 +89,9 @@ function setSelection(el: HTMLElement, start: number, end: number) {
 	el.closest(".keep-row")?.addClass("keep-editing");
 	el.normalize();
 	el.focus();
-	const sel = window.getSelection();
+	const sel = el.win.getSelection();
 	if (!sel) return;
-	const range = document.createRange();
+	const range = el.doc.createRange();
 	const node = el.firstChild;
 	if (node && node.nodeType === Node.TEXT_NODE) {
 		const len = node.textContent?.length ?? 0;
@@ -376,7 +376,7 @@ class KeepList {
 				if (link.hasClass("internal-link")) {
 					e.preventDefault();
 					const href = link.dataset.href ?? link.getAttr("href") ?? "";
-					this.plugin.app.workspace.openLinkText(href, this.ctx.sourcePath, Keymap.isModEvent(e));
+					void this.plugin.app.workspace.openLinkText(href, this.ctx.sourcePath, Keymap.isModEvent(e));
 				}
 				return;
 			}
@@ -411,7 +411,7 @@ class KeepList {
 
 	private renderMarkdown(el: HTMLElement, markdown: string) {
 		el.empty();
-		MarkdownRenderer.render(this.plugin.app, markdown, el, this.ctx.sourcePath, this.component);
+		void MarkdownRenderer.render(this.plugin.app, markdown, el, this.ctx.sourcePath, this.component);
 	}
 
 	// Runs an editor command (bold, heading, ...) against the item being edited.
@@ -450,7 +450,7 @@ class KeepList {
 		if (selected) {
 			menu.addItem((i) =>
 				i.setTitle("Cut").setIcon("scissors").onClick(() => {
-					navigator.clipboard.writeText(selected);
+					void navigator.clipboard.writeText(selected);
 					replaceSelection("");
 				}),
 			);
@@ -483,7 +483,7 @@ class KeepList {
 		this.menuOpen = true;
 		menu.onHide(() => {
 			this.menuOpen = false;
-			if (this.dirty && !this.root.contains(document.activeElement)) this.save();
+			if (this.dirty && !this.root.contains(this.root.doc.activeElement)) this.save();
 		});
 		menu.showAtMouseEvent(e);
 	}
@@ -527,6 +527,10 @@ class KeepList {
 			this.save({ idx, caret });
 		} else if (e.key === "Escape") {
 			el.blur();
+		} else if (e.key.toLowerCase() === "a" && Keymap.isModifier(e, "Mod") && !e.shiftKey && !e.altKey) {
+			// The browser would select the whole note; select just this item.
+			e.preventDefault();
+			setSelection(el, 0, el.textContent?.length ?? 0);
 		} else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
 			const rows = this.visibleRows();
 			const pos = rows.findIndex((r) => r.dataset.idx === String(idx));
@@ -684,7 +688,7 @@ class KeepList {
 	private restoreFocus() {
 		const p = pendingFocus;
 		if (!p || p.path !== this.ctx.sourcePath || Date.now() - p.at > 1000) return;
-		requestAnimationFrame(() => {
+		this.root.win.requestAnimationFrame(() => {
 			if (!this.root.isConnected) return;
 			const info = this.ctx.getSectionInfo(this.root);
 			if (info && info.lineStart !== p.lineStart) return;
@@ -693,7 +697,7 @@ class KeepList {
 		});
 	}
 
-	private async save(focus?: { idx: number; caret: number; end?: number }) {
+	private save(focus?: { idx: number; caret: number; end?: number }) {
 		this.dirty = false;
 		const info = this.ctx.getSectionInfo(this.root);
 		if (!info) {
@@ -705,7 +709,13 @@ class KeepList {
 		// Show the change right away; the write will re-render it anyway.
 		this.render();
 		this.restoreFocus();
+		this.write(lineStart, lineEnd).catch((err) => {
+			console.error("Keep Lists: couldn't save the list", err);
+			new Notice("Keep Lists: couldn't save the list.");
+		});
+	}
 
+	private async write(lineStart: number, lineEnd: number) {
 		const body = serialize(this.items);
 		const file = this.plugin.app.vault.getAbstractFileByPath(this.ctx.sourcePath);
 		if (!(file instanceof TFile)) return;
@@ -762,15 +772,21 @@ export default class KeepListsPlugin extends Plugin {
 		// While an item is being edited, route the user's formatting hotkeys to it.
 		this.scope = new Scope(this.app.scope);
 		this.scope.register(null, null, (evt, ctx) => this.onKey(ctx));
-		this.registerDomEvent(document, "focusin", (e) => {
-			if (isItemText(e.target) && !this.scopePushed) {
-				this.app.keymap.pushScope(this.scope);
-				this.scopePushed = true;
-			}
-		});
-		this.registerDomEvent(document, "focusout", (e) => {
-			if (!isItemText(e.relatedTarget)) this.popScope();
-		});
+		const watchFocus = (doc: Document) => {
+			this.registerDomEvent(doc, "focusin", (e) => {
+				if (isItemText(e.target) && !this.scopePushed) {
+					this.app.keymap.pushScope(this.scope);
+					this.scopePushed = true;
+				}
+			});
+			this.registerDomEvent(doc, "focusout", (e) => {
+				if (!isItemText(e.relatedTarget)) this.popScope();
+			});
+		};
+		const docs = new Set<Document>([activeDocument]);
+		this.app.workspace.iterateAllLeaves((leaf) => docs.add(leaf.getContainer().doc));
+		docs.forEach(watchFocus);
+		this.registerEvent(this.app.workspace.on("window-open", (win) => watchFocus(win.doc)));
 
 		this.registerMarkdownCodeBlockProcessor("keep", (source, el, ctx) => {
 			new KeepList(this, el, source, ctx);
